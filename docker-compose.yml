@@ -1,0 +1,33 @@
+# osint-enricher/docker-compose.yml
+services:
+  enricher:
+    build: ./enricher
+    image: osint_enricher:latest
+    env_file:
+      - .env
+    depends_on:
+      - db_dummy      # only to order startup; see notes below
+    environment:
+      # must match the Postgres container’s USER/PW/DB and network alias "db"
+      DATABASE_URL: "postgresql://user:pass@db:5432/osint"
+      CHROMA_DB_PATH: "/app/chroma_db"
+      ENRICH_INTERVAL: "3600"
+    volumes:
+      - chroma_data:/app/chroma_db
+    networks:
+      - osint_external  # attach to the external Rust-feed ingestor network
+
+  # dummy service so that 'depends_on' is satisfied without spinning up a second DB
+  db_dummy:
+    image: alpine:latest
+    command: ["sleep", "infinity"]
+    networks:
+      - osint_external
+
+networks:
+  osint_external:
+    external:
+      name: rust-feed-ingestor_osint_net
+
+volumes:
+  chroma_data:

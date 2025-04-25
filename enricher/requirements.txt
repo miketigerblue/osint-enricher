@@ -1,0 +1,20 @@
+# enricher/requirements.txt
+
+# Core LangChain + OpenAI + ChromaDB support (includes langchain_community)
+langchain[openai,chroma,community]
+
+# OpenAI SDK
+openai
+
+# Chroma vector store
+chromadb
+
+# Database & ORM
+psycopg2-binary
+SQLAlchemy
+
+# Env loader
+python-dotenv
+
+# Pydantic v2 settings
+pydantic-settings
