@@ -18,3 +18,7 @@ python-dotenv
 
 # Pydantic v2 settings
 pydantic-settings
+
+# FastAPI and Uvicorn
+fastapi         # Web framework for our API
+uvicorn[standard]   # ASGI server to run FastAPI

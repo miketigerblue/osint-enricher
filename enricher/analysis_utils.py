@@ -1,18 +1,18 @@
-# enricher/analysis_utils.py
-
 """
-Analysis utility module for the OSINT Enricher service.
+analysis_utils.py
+
+Analysis utility module for the OSINT Enricher service, with optional Rich progress bars and status spinners.
 
 Responsibilities:
   1) Load and configure the OpenAI LLM client
-  2) Define a strict JSON schema in the prompt (escaped so LangChain
-     doesn’t mistake JSON braces for template variables)
+  2) Define a strict JSON schema in the prompt
   3) Build a ChatPromptTemplate → LLM → JsonOutputParser chain
   4) Provide analyse_and_persist() to:
-       a) Format the prompt inputs
+       a) Format prompt inputs
        b) Invoke the chain
        c) Persist AnalysisEntry in Postgres
        d) Store an embedding in ChromaDB
+  5) Provide analyse_entries_batch() to run a batch with a progress bar
 """
 
 import uuid
@@ -21,36 +21,34 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 
-# ChatOpenAI client (from langchain-openai package)
+# Rich for console progress bars
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
+
+# LangChain LLM and parser
 from langchain_openai import ChatOpenAI
-
-# For defining/filling our prompt template
 from langchain.prompts import ChatPromptTemplate
-
-# To force the model output to valid JSON
 from langchain_core.output_parsers import JsonOutputParser
 
+# Local modules
 from database import SessionLocal, AnalysisEntry
 from chromadb_utils import store_analysis_vector
+from config import settings
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ENV: Load .env (OPENAI_API_KEY, DATABASE_URL, etc.)
-# ─────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# 0) Initialise
+# ────────────────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 1) Initialise the ChatOpenAI LLM
-# ─────────────────────────────────────────────────────────────────────────────
+_console = Console(force_terminal=True)
+
 llm = ChatOpenAI(
-    model_name="gpt-4o",    # or your preferred model
-    temperature=0.0,        # deterministic output
+    model_name="gpt-4o",
+    temperature=0.0,
     max_retries=5,
     request_timeout=60
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 2) Build a JSON schema literal (double {{ and }} to escape actual braces)
-# ─────────────────────────────────────────────────────────────────────────────
 SCHEMA = """
 {{  
   "severity_level":           "string (e.g. LOW, MEDIUM, HIGH, CRITICAL)",  
@@ -68,9 +66,6 @@ SCHEMA = """
 }}
 """
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3) Compose the prompt template (only these four placeholders!)
-# ─────────────────────────────────────────────────────────────────────────────
 PROMPT = f"""
 You are a cybersecurity analyst. Analyse the article and respond strictly in JSON, matching this schema:
 {SCHEMA}
@@ -83,39 +78,24 @@ Content: {{content}}
 IMPORTANT: Reply *only* with the JSON object—no extra explanation.
 """
 
-# Build the LangChain chain: prompt → LLM → JSON parser
 prompt = ChatPromptTemplate.from_template(PROMPT)
 parser = JsonOutputParser()
 analysis_chain = prompt | llm | parser
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 4) Main analysis function
-# ─────────────────────────────────────────────────────────────────────────────
+
 def analyse_and_persist(entry):
     """
-    entry: ArchiveEntry ORM instance
-      - guid, title, link, published (datetime), content (string)
-
-    Workflow:
-      1) Prepare only the four keys we reference in the template
-      2) Invoke the chain (LLM → JSON)
-      3) Persist AnalysisEntry to Postgres
-      4) Generate & store embedding in ChromaDB
+    Analyze a single ArchiveEntry and persist results to Postgres + ChromaDB.
     """
-
-    # 1) Build inputs dict for our four template variables
     inputs = {
         "title":     entry.title or "",
         "link":      entry.link  or "",
-        # convert datetime to ISO string
         "published": entry.published.isoformat() if entry.published else "",
         "content":   entry.content or "",
     }
-
-    # 2) Run the LLM chain and parse to a Python dict
     result: dict = analysis_chain.invoke(inputs)
 
-    # 3) Write the parsed analysis to Postgres
+    # Persist to Postgres
     session = SessionLocal()
     analysis = AnalysisEntry(
         guid                     = entry.guid,
@@ -137,16 +117,37 @@ def analyse_and_persist(entry):
     )
     session.add(analysis)
     session.commit()
+    session.close()
 
-    # 4) Store embedding + metadata in ChromaDB
-    #    NOTE: store_analysis_vector signature is:
-    #       def store_analysis_vector(doc_id, analysis_dict, title, url)
-    vector_id = str(uuid.uuid4())
+    # Store in ChromaDB
     store_analysis_vector(
-        vector_id,      # unique ID for this embedding
-        result,         # the full analysis dict from the LLM
-        entry.title,    # article title
-        entry.link      # article URL
+        document_id    = entry.guid,
+        analysis_result= result,
+        title          = entry.title,
+        url            = entry.link
     )
 
-    session.close()
+
+def analyse_entries_batch(entries):
+    """
+    Analyse and persist a batch of entries with a console progress bar.
+
+    Uses SHOW_PROGRESS (bool) from settings to toggle the bar.
+    """
+    show = settings.show_progress
+    if show:
+        total = len(entries)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            console=_console
+        ) as progress:
+            task = progress.add_task("Analysing entries", total=total)
+            for entry in entries:
+                analyse_and_persist(entry)
+                progress.advance(task)
+    else:
+        for entry in entries:
+            analyse_and_persist(entry)

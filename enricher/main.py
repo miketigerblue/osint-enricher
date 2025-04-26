@@ -1,25 +1,49 @@
 # enricher/main.py
-import time, logging
+
+import time
+import logging
+
+from sqlalchemy import select
 from database import SessionLocal, init_db, ArchiveEntry, AnalysisEntry
-from analysis_utils import analyse_and_persist
+from analysis_utils import analyse_entries_batch
 from config import settings
-from sqlalchemy import exists, select
 
 def run_loop():
+    """
+    1) Initialise DB schema
+    2) Every `settings.enrich_interval` seconds:
+       - Query for unanalysed entries
+       - Batch-analyse with progress bar
+       - Sleep
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S"
+    )
+    logger = logging.getLogger(__name__)
+
     init_db()
-    sess = SessionLocal()
+    logger.info("Database initialised")
+
+    session = SessionLocal()
+
     while True:
-        # find all archive entries without an analysis row
         subq = select(AnalysisEntry.guid)
-        q = sess.query(ArchiveEntry).filter(~ArchiveEntry.guid.in_(subq))
-        for entry in q.all():
-            try:
-                logging.info(f"Analysing {entry.guid}")
-                analyse_and_persist(entry)
-            except Exception as e:
-                logging.exception(f"Failed to analyse {entry.guid}: {e}")
-        logging.info(f"Sleeping for {settings.enrich_interval}s")
+        entries = session.query(ArchiveEntry)\
+                         .filter(~ArchiveEntry.guid.in_(subq))\
+                         .all()
+        count = len(entries)
+        if count:
+            logger.info(f"Found {count} entries to analyse")
+            analyse_entries_batch(entries)
+            logger.info("Batch analysis complete")
+        else:
+            logger.info("No new entries to analyse")
+
+        logger.info(f"Sleeping for {settings.enrich_interval} seconds")
         time.sleep(settings.enrich_interval)
+
 
 if __name__ == "__main__":
     run_loop()
