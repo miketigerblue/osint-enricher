@@ -32,7 +32,7 @@ load_dotenv()
 # 2. Initialise the ChatOpenAI LLM
 # ──────────────────────────────────────────────────────────────
 llm = ChatOpenAI(
-    model_name="gpt-4.1",        # or your preferred model
+    model_name="gpt-4.1-mini",        # or your preferred model
     temperature=0.0,             # deterministic output
     max_retries=5,
     request_timeout=60

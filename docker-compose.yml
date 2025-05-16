@@ -1,25 +1,24 @@
 volumes:
-  chroma_data:
+  chroma_data:  # Persistent volume for ChromaDB data
 
 services:
   enricher:
-    build: ./enricher
-    image: osint_enricher:latest
+    build: ./enricher               # Build context for Dockerfile (adjust if needed)
+    image: osint_enricher:latest    # Custom image tag
     env_file:
-      - .env
+      - .env                        # Load environment variables from .env file
     environment:
-      # must match the Postgres container’s USER/PW/DB and network alias "db"
+      # Override or ensure these env vars are set (can be omitted if in .env)
       DATABASE_URL: "postgresql://user:pass@db:5432/osint"
       CHROMA_DB_PATH: "/app/chroma_db"
-      ENRICH_INTERVAL: "60"
+      ENRICH_INTERVAL: "60"         # How often to poll for new entries (seconds)
     volumes:
-      - chroma_data:/app/chroma_db
+      - chroma_data:/app/chroma_db  # Mount ChromaDB data for persistence
     networks:
-      - osint_net
+      - osint_net                   # Connect to the external network for Postgres
 
+# Define external network (must already exist, e.g., created by Rust feed ingestor or Postgres compose)
 networks:
   osint_net:
     external: true
-    name: rust-feed-ingestor_osint_net
-
-
+    name: rust-feed-ingestor_osint_net  # Name of the pre-existing network
