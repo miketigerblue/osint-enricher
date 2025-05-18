@@ -11,4 +11,7 @@ CREATE INDEX IF NOT EXISTS idx_enriched_mv_severity ON enriched_archive_analysis
 -- Index on published date for time-based queries
 CREATE INDEX IF NOT EXISTS idx_enriched_mv_published ON enriched_archive_analysis_mv (published);
 
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_enriched_archive_analysis_mv_guid
+ON enriched_archive_analysis_mv (guid);
+
 COMMIT;

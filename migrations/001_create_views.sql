@@ -151,6 +151,64 @@ FROM analysis,
      jsonb_array_elements_text(COALESCE("key_IOCs"::jsonb, '[]'::jsonb)) AS ioc
 ORDER BY ioc;
 
+-- 13. v1_threat_frontend
+-- View for the v1 frontend, showing all analyses with relevant fields
+CREATE OR REPLACE VIEW v1_threat_frontend AS
+SELECT ar.guid,
+    ar.title,
+    ar.link,
+    ar.published,
+    ar.content,
+    an.severity_level,
+    regexp_replace(an.confidence, '[^0-9]'::text, ''::text, 'g'::text)::integer AS confidence_pct,
+    an.historical_context,
+    an.summary_impact,
+    an.relevance,
+    an.additional_notes,
+    an.source_name,
+    an.source_url,
+    an.analysed_at,
+    COALESCE(an.recommended_actions, '[]'::json) AS recommended_actions,
+    COALESCE(an."key_IOCs", '[]'::json) AS key_iocs,
+    COALESCE(an.affected_systems_sectors, '[]'::json) AS affected_systems_sectors,
+    COALESCE(an.mitigation_strategies, '[]'::json) AS mitigation_strategies,
+    COALESCE(an.potential_threat_actors, '[]'::json) AS potential_threat_actors,
+    COALESCE(an.cve_references, '[]'::json) AS cve_references,
+    COALESCE(an.ttps, '[]'::json) AS ttps,
+    COALESCE(an.attack_vectors, '[]'::json) AS attack_vectors,
+    COALESCE(an.tools_used, '[]'::json) AS tools_used,
+    COALESCE(an.malware_families, '[]'::json) AS malware_families,
+    COALESCE(an.target_geographies, '[]'::json) AS target_geographies,
+    COALESCE(an.exploit_references, '[]'::json) AS exploit_references
+FROM archive ar
+JOIN analysis an USING (guid);
+
+-- 14. v_threat_frontend
+-- View the original v0 threat frontend, showing all analyses with relevant fields
+ SELECT ar.guid,
+    ar.title,
+    ar.link,
+    ar.published,
+    ar.content,
+    an.severity_level,
+    regexp_replace(an.confidence, '[^0-9]'::text, ''::text, 'g'::text)::integer AS confidence_pct,
+    an.historical_context,
+    an.summary_impact,
+    an.relevance,
+    an.additional_notes,
+    an.source_name,
+    an.source_url,
+    an.analysed_at,
+    COALESCE(an.recommended_actions, '[]'::json) AS recommended_actions,
+    COALESCE(an."key_IOCs", '[]'::json) AS key_iocs,
+    COALESCE(an.affected_systems_sectors, '[]'::json) AS affected_systems_sectors,
+    COALESCE(an.mitigation_strategies, '[]'::json) AS mitigation_strategies,
+    COALESCE(an.potential_threat_actors, '[]'::json) AS potential_threat_actors,
+    COALESCE(an.cve_references, '[]'::json) AS cve_references
+FROM archive ar
+JOIN analysis an USING (guid);
+
+
 
 -- ====================================================
 -- Migration: Create materialized view grouped_analyses_by_domain
