@@ -151,4 +151,46 @@ FROM analysis,
      jsonb_array_elements_text(COALESCE("key_IOCs"::jsonb, '[]'::jsonb)) AS ioc
 ORDER BY ioc;
 
+
+-- ====================================================
+-- Migration: Create materialized view grouped_analyses_by_domain
+-- Groups threat analyses by base domain extracted from GUID or link
+-- Handles missing or malformed URLs gracefully by assigning 'no_domain'
+-- Aggregates related analyses into JSON arrays ordered by analysed_at DESC
+-- ====================================================
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS grouped_analyses_by_domain AS
+SELECT 
+    -- Extract base domain from guid or link if valid URL, else assign 'no_domain'
+    CASE 
+        WHEN guid ~* '^https?://' THEN split_part(split_part(guid, '://', 2), '/', 1)
+        WHEN link ~* '^https?://' THEN split_part(split_part(link, '://', 2), '/', 1)
+        ELSE 'no_domain'
+    END AS base_domain,
+
+    -- Count of analyses per domain (for sorting/popularity)
+    COUNT(*) AS analysis_count,
+
+    -- Aggregate all analyses for this domain as JSON array, most recent first
+    JSON_AGG(
+        JSON_BUILD_OBJECT(
+            'guid', guid,
+            'title', title,
+            'link', link,
+            'published', published,
+            'severity_level', severity_level,
+            'confidence_pct', confidence_pct,
+            'summary_impact', summary_impact,
+            'analysed_at', analysed_at
+            -- Add more fields here as needed
+        ) ORDER BY analysed_at DESC
+    ) AS analyses
+
+FROM enriched_archive_analysis_mv
+
+GROUP BY base_domain
+
+ORDER BY analysis_count DESC;
+
+
 COMMIT;

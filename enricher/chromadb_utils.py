@@ -4,18 +4,32 @@ ChromaDB utilities for storing and retrieving threat analysis vectors.
 - Initializes ChromaDB client and collection with OpenAI embedding function.
 - Stores analysis results as embeddings with rich metadata for RAG and filtering.
 - Includes feed/source metadata in vector metadata for advanced search/filtering.
+
+Because vectors without metadata are like spies without secrets — not very useful!
 """
 
 import chromadb
 from chromadb.utils import embedding_functions
 import json
 from config import settings
+from rich.console import Console
+from rich.logging import RichHandler
+import logging
+
+# Setup rich console and logging for colorful, pretty output
+console = Console()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[RichHandler(rich_tracebacks=True, markup=True)],
+)
+logger = logging.getLogger("osint-enricher")
 
 # ──────────────────────────────────────────────────────────────
 # 1. Embedding Function Setup
 # ──────────────────────────────────────────────────────────────
-
-# Use OpenAI's embedding model for vectorization
+# Using OpenAI's text-embedding-3-large, because size does matter for vectors
 openai_ef = embedding_functions.OpenAIEmbeddingFunction(
     api_key=settings.openai_api_key,
     model_name="text-embedding-3-large"
@@ -24,11 +38,10 @@ openai_ef = embedding_functions.OpenAIEmbeddingFunction(
 # ──────────────────────────────────────────────────────────────
 # 2. ChromaDB Client and Collection Setup
 # ──────────────────────────────────────────────────────────────
-
-# Persistent ChromaDB client (vector DB)
+# Persistent client so your vectors stick around like a good mystery
 client = chromadb.PersistentClient(path=settings.chroma_db_path)
 
-# Collection for threat embeddings, with embedding function
+# Collection for threat embeddings, embedding function attached for automatic vectorization
 collection = client.get_or_create_collection(
     name="threat_embeddings",
     embedding_function=openai_ef
@@ -37,7 +50,6 @@ collection = client.get_or_create_collection(
 # ──────────────────────────────────────────────────────────────
 # 3. Store Analysis Vector Function
 # ──────────────────────────────────────────────────────────────
-
 def store_analysis_vector(document_id: str, analysis_result: dict, title: str, url: str, feed_metadata: dict = None) -> None:
     """
     Store the analysis result as an embedding vector in ChromaDB.
@@ -45,8 +57,10 @@ def store_analysis_vector(document_id: str, analysis_result: dict, title: str, u
     - Embeds a concatenation of key fields for semantic search.
     - Stores all fields as metadata for advanced filtering.
     - Includes feed/source metadata if provided.
+
+    Because a vector without context is like a riddle without an answer.
     """
-    # Prepare metadata for filtering/search (flatten arrays/dicts)
+    # Prepare metadata for filtering/search (flatten lists and dicts to JSON strings)
     meta = {
         "title": title,
         "url": url,
@@ -62,12 +76,13 @@ def store_analysis_vector(document_id: str, analysis_result: dict, title: str, u
         "target_geographies": json.dumps(analysis_result.get("target_geographies", [])),
         "exploit_references": json.dumps(analysis_result.get("exploit_references", [])),
     }
-    # Add any other fields from analysis_result (flatten if list/dict)
+
+    # Add any other fields from analysis_result that aren't already included
     for k, v in analysis_result.items():
         if k not in meta:
             meta[k] = json.dumps(v) if isinstance(v, (list, dict)) else v
 
-    # Add feed/source metadata if provided
+    # Add feed/source metadata if provided (more context = better context)
     if feed_metadata:
         meta.update(feed_metadata)
 
@@ -87,12 +102,13 @@ def store_analysis_vector(document_id: str, analysis_result: dict, title: str, u
         f"Feed Language: {feed_metadata.get('feed_language') if feed_metadata else ''}\n"
     )
 
-    # Store the vector and metadata in ChromaDB
+    # Attempt to store the vector and metadata in ChromaDB
     try:
         collection.add(
             documents=[doc_for_embedding],
             metadatas=[meta],
             ids=[document_id]
         )
+        logger.info(f"[green]Stored embedding vector for document ID: {document_id}[/green]")
     except Exception as e:
-        print(f"Failed to store analysis vector for {document_id}: {e}")
+        logger.error(f"[red]Failed to store analysis vector for {document_id}: {e}[/red]")

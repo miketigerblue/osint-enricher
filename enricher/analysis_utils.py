@@ -11,6 +11,7 @@ Responsibilities:
     c. Persist AnalysisEntry in Postgres
     d. Store an embedding in ChromaDB
  5. RAG: Retrieve similar threat analyses for context
+ 6. Smart truncation to keep embedding queries within token limits
 """
 
 import uuid
@@ -23,6 +24,20 @@ from database import SessionLocal, AnalysisEntry
 from chromadb_utils import store_analysis_vector
 from config import settings
 
+from rich.console import Console
+from rich.logging import RichHandler
+import logging
+
+# Initialize rich console and configure logging for colorful output
+console = Console()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[RichHandler(rich_tracebacks=True, markup=True)],
+)
+logger = logging.getLogger("osint-enricher")
+
 # ──────────────────────────────────────────────────────────────
 # 1. Load environment variables (OPENAI_API_KEY, DATABASE_URL, etc.)
 # ──────────────────────────────────────────────────────────────
@@ -32,8 +47,8 @@ load_dotenv()
 # 2. Initialise the ChatOpenAI LLM
 # ──────────────────────────────────────────────────────────────
 llm = ChatOpenAI(
-    model_name="gpt-4.1-mini",        # or your preferred model
-    temperature=0.0,             # deterministic output
+    model_name="gpt-4.1-mini",  # Small but mighty model (token limits still apply!)
+    temperature=0.0,            # No surprises, just facts please
     max_retries=5,
     request_timeout=60
 )
@@ -43,24 +58,24 @@ llm = ChatOpenAI(
 # ──────────────────────────────────────────────────────────────
 SCHEMA = """
 {{
-  "severity_level": "string (e.g. LOW, MEDIUM, HIGH, CRITICAL)",
-  "confidence": "string (e.g. 87%)",
-  "recommended_actions": ["array", "of", "strings"],
-  "key_IOCs": ["array", "of", "strings"],
-  "affected_systems_sectors": ["array", "of", "strings"],
-  "mitigation_strategies": ["array", "of", "strings"],
-  "potential_threat_actors": ["array", "of", "strings"],
-  "historical_context": "string",
-  "summary_impact": "string",
-  "relevance": "string",
-  "additional_notes": "string",
-  "cve_references": ["array", "of", "CVE identifiers"],
-  "ttps": ["array", "of", "strings, e.g. MITRE ATT&CK tactic/technique names or IDs"],
-  "attack_vectors": ["array", "of", "strings, e.g. phishing, RDP brute force, supply chain"],
-  "tools_used": ["array", "of", "strings, e.g. Cobalt Strike, Mimikatz"],
-  "malware_families": ["array", "of", "strings, e.g. Emotet, TrickBot"],
-  "target_geographies": ["array", "of", "strings, e.g. USA, Europe, APAC"],
-  "exploit_references": ["array", "of", "URLs or references to exploits, PoCs, or advisories"]
+ "severity_level": "string (e.g. LOW, MEDIUM, HIGH, CRITICAL)",
+ "confidence": "string (e.g. 87%)",
+ "recommended_actions": ["array", "of", "strings"],
+ "key_IOCs": ["array", "of", "strings"],
+ "affected_systems_sectors": ["array", "of", "strings"],
+ "mitigation_strategies": ["array", "of", "strings"],
+ "potential_threat_actors": ["array", "of", "strings"],
+ "historical_context": "string",
+ "summary_impact": "string",
+ "relevance": "string",
+ "additional_notes": "string",
+ "cve_references": ["array", "of", "CVE identifiers"],
+ "ttps": ["array", "of", "strings, e.g. MITRE ATT&CK tactic/technique names or IDs"],
+ "attack_vectors": ["array", "of", "strings, e.g. phishing, RDP brute force, supply chain"],
+ "tools_used": ["array", "of", "strings, e.g. Cobalt Strike, Mimikatz"],
+ "malware_families": ["array", "of", "strings, e.g. Emotet, TrickBot"],
+ "target_geographies": ["array", "of", "strings, e.g. USA, Europe, APAC"],
+ "exploit_references": ["array", "of", "URLs or references to exploits, PoCs, or advisories"]
 }}
 """
 
@@ -101,29 +116,54 @@ analysis_chain = prompt | llm | parser
 # ──────────────────────────────────────────────────────────────
 # 5. RAG: Retrieve similar past threat analyses for LLM context
 # ──────────────────────────────────────────────────────────────
-def get_similar_analyses(query_text, top_k=3):
+def get_similar_analyses(query_text, top_k=2, max_context_tokens=1500, max_query_tokens=1000):
     """
     Retrieve top_k similar threat analyses from ChromaDB for context augmentation.
-    Returns a formatted string for the LLM prompt.
+    Truncates the query_text before embedding to avoid token overflow.
+    Truncates retrieved context snippets to keep prompt lean.
+    Because even embedding models have token limits,
+    and we don’t want to crash the party with a prompt too big to handle.
     """
     from chromadb_utils import collection
+
+    # Heuristic truncation of query_text for embedding (approximate)
+    max_query_chars = max_query_tokens * 4  # Roughly 4 chars per token
+    truncated_query = query_text[:max_query_chars]
+
     results = collection.query(
-        query_texts=[query_text],
+        query_texts=[truncated_query],  # Use truncated query to keep embedding happy
         n_results=top_k,
         include=['metadatas', 'documents']
     )
+
     similar_entries = []
+    total_tokens = 0
+
     for meta, doc in zip(results['metadatas'][0], results['documents'][0]):
+        snippet = (doc or "")[:250]  # snippet size to save tokens
+
         entry = (
             f"Title: {meta.get('title')}\n"
-            f"Summary Impact: {meta.get('summary_impact')}\n"
+            f"Summary Impact: {snippet}\n"
             f"TTPs: {meta.get('ttps')}\n"
             f"Feed Title: {meta.get('feed_title')}\n"
             f"Feed Language: {meta.get('feed_language')}\n"
             f"URL: {meta.get('url')}"
         )
+
+        estimated_tokens = len(entry.split()) * 4 // 3  # rough token estimate
+
+        if total_tokens + estimated_tokens > max_context_tokens:
+            # Enough context for now — no need to get greedy
+            break
+
         similar_entries.append(entry)
-    return "\n\n".join(similar_entries) if similar_entries else "None found."
+        total_tokens += estimated_tokens
+
+    if not similar_entries:
+        return "None found."
+
+    return "\n\n".join(similar_entries)
 
 # ──────────────────────────────────────────────────────────────
 # 6. Main analysis function
@@ -132,17 +172,24 @@ def analyse_and_persist(entry):
     """
     Enriches an ArchiveEntry with LLM analysis, persists to Postgres,
     and stores an embedding in ChromaDB.
+    Uses smart truncation in RAG retrieval and prompt construction
+    to avoid token overloads and keep the LLM happy.
+    Because nobody wants a token overflow error ruining their day.
     """
-    # RAG: Use title, summary, and content for semantic retrieval
-    query_text = f"{entry.title} {entry.summary or ''} {entry.content or ''}"
-    retrieved_context = get_similar_analyses(query_text, top_k=3)
+    # Truncate article content to max 1000 chars to keep prompt manageable
+    max_content_length = 1000
+    truncated_content = (entry.content or "")[:max_content_length]
 
-    # Prepare all prompt inputs (including feed and article metadata)
+    # RAG: Use title, summary, and truncated content for semantic retrieval
+    query_text = f"{entry.title} {entry.summary or ''} {truncated_content}"
+    retrieved_context = get_similar_analyses(query_text, top_k=2)
+
+    # Prepare prompt inputs (including feed and article metadata)
     inputs = {
         "title": entry.title or "",
         "link": entry.link or "",
         "published": entry.published.isoformat() if entry.published else "",
-        "content": entry.content or "",
+        "content": truncated_content,
         "summary": entry.summary or "",
         "author": entry.author or "",
         "categories": ", ".join(entry.categories) if entry.categories else "",
@@ -159,12 +206,12 @@ def analyse_and_persist(entry):
     try:
         result: dict = analysis_chain.invoke(inputs)
     except Exception as e:
-        print(f"LLM analysis failed: {e}")
+        logger.error(f"[red]LLM analysis failed:[/red] {e}")
         return
 
+    # Persist the structured analysis result to Postgres
     session = SessionLocal()
     try:
-        # Persist the structured analysis result to Postgres
         analysis = AnalysisEntry(
             guid=entry.guid,
             severity_level=result.get("severity_level"),
@@ -206,10 +253,12 @@ def analyse_and_persist(entry):
             "feed_updated": entry.feed_updated.isoformat() if entry.feed_updated else "",
             "feed_url": entry.feed_url or ""
         }
+
         vector_id = str(uuid.uuid4())
         store_analysis_vector(vector_id, result, entry.title, entry.link, feed_metadata)
+
     except Exception as e:
         session.rollback()
-        print(f"Error persisting analysis: {e}")
+        logger.error(f"[red]Error persisting analysis:[/red] {e}")
     finally:
         session.close()
